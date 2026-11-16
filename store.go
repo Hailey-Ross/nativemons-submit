@@ -14,7 +14,8 @@ import (
 	"time"
 )
 
-// The data folder: queue/<receipt>.package (the exact bytes) and .json (what the server noted), then
+// The data folder: queue/<receipt>.package (the exact bytes), .sig (its signature, checked, kept so a merge can
+// check it again) and .json (what the server noted), then
 // approved/ or rejected/ after review, and banned.txt (one key id a line). Names are always the server's.
 type store struct {
 	dir string
@@ -72,7 +73,7 @@ func (s *store) ban(id string) error {
 }
 
 // quarantine keeps the package as data only: written beside, then renamed, never run or unpacked.
-func (s *store) quarantine(kind, key, ipTag, summary string, body []byte) (string, error) {
+func (s *store) quarantine(kind, key, ipTag, summary string, body []byte, sig string) (string, error) {
 	r := make([]byte, 8)
 	if _, err := rand.Read(r); err != nil {
 		return "", err
@@ -85,7 +86,7 @@ func (s *store) quarantine(kind, key, ipTag, summary string, body []byte) (strin
 	for _, f := range []struct {
 		path string
 		data []byte
-	}{{base + ".package", body}, {base + ".json", m}} {
+	}{{base + ".package", body}, {base + ".sig", []byte(sig)}, {base + ".json", m}} {
 		if err := os.WriteFile(f.path+".part", f.data, 0o600); err != nil {
 			return "", err
 		}
@@ -117,7 +118,7 @@ func (s *store) move(receipt, to string) error {
 	if !reReceipt.MatchString(receipt) {
 		return errors.New("not a receipt")
 	}
-	for _, ext := range []string{".package", ".json"} {
+	for _, ext := range []string{".package", ".sig", ".json"} {
 		if err := os.Rename(filepath.Join(s.dir, "queue", receipt+ext), filepath.Join(s.dir, to, receipt+ext)); err != nil {
 			return err
 		}

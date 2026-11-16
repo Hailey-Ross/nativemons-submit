@@ -50,7 +50,8 @@ X-NM-Signature: <base64 r||s, 64 bytes>
   `{"key":"<base64 key>"}`.
 - `launcher`: 1 to 80 of `A-Z a-z 0-9 space . , ( ) -`. `zakuro`: 7 to 40 lowercase hex digits, or `unknown`.
 
-Answer: `202 {"receipt": "<yyyymmdd>-<16 hex>"}`. The package waits in the review queue; nothing reaches
+Answer: `202 {"receipt": "<yyyymmdd>-<16 hex>"}`. The server keeps the package's exact bytes and its signature, so a merge
+can check both again. The package waits in the review queue; nothing reaches
 the shared lists until it's approved.
 
 ## Kinds

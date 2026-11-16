@@ -235,7 +235,7 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "bad layout")
 		return
 	}
-	receipt, err := s.store.quarantine(e.Kind, id, ip, summary, body)
+	receipt, err := s.store.quarantine(e.Kind, id, ip, summary, body, r.Header.Get("X-NM-Signature"))
 	if err != nil {
 		log.Printf("quarantine: %v", err)
 		refuse(w, http.StatusInternalServerError, "try again")

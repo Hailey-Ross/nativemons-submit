@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -91,8 +93,16 @@ func TestGoodPackageIsQueued(t *testing.T) {
 	if code := c.send(p, c.sign(p)); code != 202 {
 		t.Fatalf("got %d", code)
 	}
-	if q, _ := st.list("queue"); len(q) != 1 {
+	q, _ := st.list("queue")
+	if len(q) != 1 {
 		t.Fatalf("queue has %d", len(q))
+	}
+	// The signature is kept beside the package, and still checks out against it.
+	kept, err1 := os.ReadFile(filepath.Join(st.dir, "queue", q[0].Receipt+".package"))
+	sig, err2 := os.ReadFile(filepath.Join(st.dir, "queue", q[0].Receipt+".sig"))
+	key, _, err3 := parseKey(c.pub())
+	if err1 != nil || err2 != nil || err3 != nil || !bytes.Equal(kept, p) || !verify(key, kept, string(sig)) {
+		t.Fatal("the kept package and signature don't check out")
 	}
 }
 
