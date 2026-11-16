@@ -11,7 +11,11 @@ It trusts nothing it's sent:
 - The size is limited before anything is read, every object must have exactly its fields, and every value
   is checked (characters, lengths, ranges, order).
 - Packages are data only: stored under names the server makes, never run, unpacked or used as a path.
-- Rate limits per address and per install, and banned keys. Addresses are kept only as a salted hash.
+- Rate limits per address and per install, and banned keys. Addresses are kept only as a salted hash (the
+  salt is random and stays on the server, readable only by the service).
+- Every refusal is a strike: too many from an address (10 an hour) or a proven install (5 a day) block it for
+  a day, before anything else it sends is read. Blocks outlast restarts. Refusals are logged for
+  `review refusals`.
 - Nothing reaches nativeMons until a person approves it.
 
 ## Docs
@@ -29,6 +33,8 @@ nativemons-submit review show <receipt>      the package, after its checks again
 nativemons-submit review approve <receipt>   to approved/, for the merge in nativeMons
 nativemons-submit review reject <receipt>
 nativemons-submit review ban <key id>
+nativemons-submit review unblock <tag|key>   lifts a block early (then restart the service)
+nativemons-submit review refusals [hours]    what was refused, from where, and what got blocked (default 24)
 ```
 
 `NMSUBMIT_TRUST_PROXY=1` reads the client's address from Caddy's `X-Forwarded-For`, only for requests

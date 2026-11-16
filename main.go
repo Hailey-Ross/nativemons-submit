@@ -6,6 +6,8 @@
 //	nativemons-submit review show <receipt>
 //	nativemons-submit review approve|reject <receipt>
 //	nativemons-submit review ban <key id>
+//	nativemons-submit review unblock <address tag|key id>  (then restart the service)
+//	nativemons-submit review refusals [hours]      (what was refused and blocked, default the last 24)
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -48,6 +51,11 @@ func main() {
 		log.Printf("listening on %s", srv.Addr)
 		log.Fatal(srv.ListenAndServe())
 	case "review":
+		// As root, a file it writes (banned.txt, blocks.json) would be root's, and the service couldn't read it.
+		if os.Geteuid() == 0 {
+			fmt.Fprintln(os.Stderr, "run review as the service's user: sudo -u nmsubmit NMSUBMIT_DATA=/opt/nativemons-submit/data ...")
+			os.Exit(2)
+		}
 		os.Exit(review(st, os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "usage: nativemons-submit serve | review ...")
@@ -57,7 +65,7 @@ func main() {
 
 func review(st *store, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "review list [approved|rejected] | show <receipt> | approve <receipt> | reject <receipt> | ban <key id>")
+		fmt.Fprintln(os.Stderr, "review list [approved|rejected] | show <receipt> | approve <receipt> | reject <receipt> | ban <key id> | unblock <tag|key id> | refusals [hours]")
 		return 2
 	}
 	switch {
@@ -97,6 +105,30 @@ func review(st *store, args []string) int {
 		}
 		fmt.Println(args[1], "->", to)
 		return 0
+	case args[0] == "refusals" && len(args) <= 2:
+		hours := 24
+		if len(args) == 2 {
+			h, err := strconv.Atoi(args[1])
+			if err != nil || h < 1 || h > 24*90 {
+				fmt.Fprintln(os.Stderr, "hours: 1 to 2160")
+				return 2
+			}
+			hours = h
+		}
+		printRefusals(st, hours)
+		return 0
+	case args[0] == "unblock" && len(args) == 2:
+		found, err := st.unblock(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if !found {
+			fmt.Println("not blocked:", args[1])
+			return 0
+		}
+		fmt.Println("unblocked", args[1], "(takes effect when the service restarts: systemctl restart nativemons-submit)")
+		return 0
 	case args[0] == "ban" && len(args) == 2:
 		if err := st.ban(args[1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -105,6 +137,6 @@ func review(st *store, args []string) int {
 		fmt.Println("banned", args[1])
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "review list [approved|rejected] | show <receipt> | approve <receipt> | reject <receipt> | ban <key id>")
+	fmt.Fprintln(os.Stderr, "review list [approved|rejected] | show <receipt> | approve <receipt> | reject <receipt> | ban <key id> | unblock <tag|key id> | refusals [hours]")
 	return 2
 }

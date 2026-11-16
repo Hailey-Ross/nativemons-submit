@@ -20,7 +20,9 @@ Content-Type: application/json
 {"key": "<base64 key>"}
 ```
 
-Answer: `{"nonce": "<base64 32 bytes>", "expires": <unix seconds>}`. A challenge belongs to that key, lasts
+Answer: `{"nonce": "<base64 32 bytes>", "now": <unix seconds>, "expires": <unix seconds>}`. `now` is the
+server's clock: the launcher uses it for the package's `created` (plus the seconds since the answer came),
+never the PC's own clock, which may be wrong. A challenge belongs to that key, lasts
 5 minutes, and works once. At most 30 challenges an hour per address. A banned key gets `403`.
 
 ## 3. The package
@@ -36,10 +38,11 @@ X-NM-Signature: <base64 r||s, 64 bytes>
 
 - The signature is ECDSA P-256 over the SHA-256 of the exact request body, as `r||s` (32 bytes each),
   which is what .NET's `ECDsa.SignData(data, HashAlgorithmName.SHA256)` returns.
-- The order the server checks in: the kind exists, the address isn't over its limit (60 packages a day),
-  the content type, the size (each kind has a limit, read no further), the outer shape, the signature over
-  the exact bytes, the key isn't banned, the challenge (this key's, unexpired, unused), the clock (within
-  10 minutes), the key's daily limit for the kind, then the kind's own check of `body`.
+- The order the server checks in: the address isn't blocked, the kind exists, the request itself (size,
+  no query, no chunked body, the content type; read no further), the address isn't over its limit (60
+  packages a day), the outer shape, the signature over the exact bytes, the key isn't banned or blocked, the
+  challenge (this key's, unexpired, unused), the clock (within 10 minutes of the server's `now`), the key's daily limit for the
+  kind, then the kind's own check of `body`.
 - Every object, outer and inner, must have exactly its fields: none missing, none extra, none twice, and
   nothing after it.
 - **One layout only.** The package must be byte for byte what the launcher writes: the fields in the order
@@ -53,6 +56,23 @@ X-NM-Signature: <base64 r||s, 64 bytes>
 Answer: `202 {"receipt": "<yyyymmdd>-<16 hex>"}`. The server keeps the package's exact bytes and its signature, so a merge
 can check both again. The package waits in the review queue; nothing reaches
 the shared lists until it's approved.
+
+## Refusals and blocks
+
+Every refusal answers `{"error": "<short reason>"}` and counts as a strike:
+
+- **Against the address**, always. 10 in an hour block the address for 24 hours.
+- **Against the install** (its key id), only once the signature has held, since anyone can send someone
+  else's public key. 5 in a day block the install for 24 hours, and the server's log flags it for a ban.
+
+A blocked address or install gets `429 {"error": "blocked"}` for everything, valid requests included, before
+anything it sends is read; a blocked install also gets no challenges. Blocks are kept on the server's disk,
+so they last their full day through restarts. Rate limits (`429 "too many requests"`, `"too many packages"`),
+`400 "clock"` and `500 "try again"` aren't strikes.
+
+So a launcher must not retry a refusal as it is: show the reason, and send again only after something
+changes. Only `500` is worth retrying, once, a little later. `"clock"` can only happen to a launcher that
+didn't take `created` from the challenge's `now`.
 
 ## Kinds
 

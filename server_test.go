@@ -2,9 +2,6 @@ package main
 
 import (
 	"bytes"
-	"io"
-	"os"
-	"path/filepath"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,8 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,13 +77,23 @@ func (c *client) send(pkg []byte, sig string) int {
 }
 
 func setup(t *testing.T) (*httptest.Server, *store) {
+	ts, st, _ := setupWith(t, nil)
+	return ts, st
+}
+
+// setupWith lets a test change the server (its strike limits, its clock) before it starts.
+func setupWith(t *testing.T, tune func(*server)) (*httptest.Server, *store, *server) {
 	st, err := openStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(newServer(st, false).routes())
+	s := newServer(st, false)
+	if tune != nil {
+		tune(s)
+	}
+	ts := httptest.NewServer(s.routes())
 	t.Cleanup(ts.Close)
-	return ts, st
+	return ts, st, s
 }
 
 func TestGoodPackageIsQueued(t *testing.T) {
@@ -107,7 +117,8 @@ func TestGoodPackageIsQueued(t *testing.T) {
 }
 
 func TestRefused(t *testing.T) {
-	ts, st := setup(t)
+	// Many refusals from one address on purpose: the address limit is raised so they all get checked.
+	ts, st, _ := setupWith(t, func(s *server) { s.ipStrikes = 1000 })
 	cases := map[string]func(c *client) ([]byte, string){
 		"tampered after signing": func(c *client) ([]byte, string) {
 			p := c.pkg(c.nonce(), goodBody)

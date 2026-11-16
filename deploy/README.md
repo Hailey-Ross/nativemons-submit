@@ -29,8 +29,13 @@ restarts the service. It reads `VPS_HOST`, `VPS_USER` and `SSH_KEY` from a `.env
 On the server, as the service's user:
 ```
 sudo -u nmsubmit NMSUBMIT_DATA=/opt/nativemons-submit/data /opt/nativemons-submit/nativemons-submit review list
-... review show <receipt> | approve <receipt> | reject <receipt> | ban <key id>
+... review show <receipt> | approve <receipt> | reject <receipt> | ban <key id> | unblock <tag|key id> | refusals [hours]
 ```
+`review refusals` shows what was turned away in the last day: by reason, by address tag, by install, and the
+addresses and installs blocked for a day. An install that keeps getting blocked is one to `ban`. Blocks are
+kept in `data/blocks.json` and the address salt in `data/ipsalt`, so a restart or a deploy changes neither.
+To lift a block early: `review unblock <address tag or key id>`, then `sudo systemctl restart
+nativemons-submit`.
 An approved package is in `data/approved/<receipt>.package`; nativeMons' `tools/zakuro-hints/merge.ps1
 -Package <file>` checks it again and merges it into the hints branch.
 

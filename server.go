@@ -39,16 +39,23 @@ type server struct {
 
 	mu         sync.Mutex
 	challenges map[string]challenge   // nonce -> who and until when
-	counts     map[string][]time.Time // "c:"/"u:"/"k:<kind>:" + who -> recent times
+	counts     map[string][]time.Time // "c:"/"u:"/"k:<kind>:"/"s:" (strikes) + who -> recent times
+	blocked    map[string]time.Time   // "ip:<tag>"/"key:<id>" -> blocked until
+
+	ipStrikes, keyStrikes int // see guard.go
 }
 
 func newServer(st *store, trustProxy bool) *server {
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
+	// The salt and the blocks are kept in the data folder, so a restart or a deploy keeps both.
+	salt, err := st.ipSalt()
+	if err != nil {
 		log.Fatal(err)
 	}
-	return &server{store: st, trustProxy: trustProxy, ipSalt: salt, now: time.Now,
-		challenges: map[string]challenge{}, counts: map[string][]time.Time{}}
+	s := &server{store: st, trustProxy: trustProxy, ipSalt: salt, now: time.Now,
+		challenges: map[string]challenge{}, counts: map[string][]time.Time{}, blocked: st.loadBlocks(time.Now()),
+		ipStrikes: ipStrikeLimit, keyStrikes: keyStrikeLimit}
+	go s.sweep()
+	return s
 }
 
 func (s *server) routes() http.Handler {
@@ -76,7 +83,8 @@ func (s *server) clientIP(r *http.Request) string {
 	return host
 }
 
-// Addresses are kept only as a salted hash that changes with every restart.
+// Addresses are kept only as a salted hash. The salt is random, made once and kept in the data folder (only
+// the service's user can read it), so a tag means the same address across restarts.
 func (s *server) ipTag(ip string) string {
 	m := hmac.New(sha256.New, s.ipSalt)
 	m.Write([]byte(ip))
@@ -108,32 +116,43 @@ func refuse(w http.ResponseWriter, status int, reason string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": reason})
 }
 
-// POST /v1/challenge {"key": "<base64 P-256 point>"} -> {"nonce": "...", "expires": <unix>}
+// POST /v1/challenge {"key": "<base64 P-256 point>"} -> {"nonce": "...", "now": <unix>, "expires": <unix>}
+// "now" is the server's clock, for the package's "created", so a player's wrong clock doesn't matter.
 func (s *server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	ip := s.ipTag(s.clientIP(r))
+	if s.blockedNow("ip:" + ip) {
+		turnAway(w)
+		return
+	}
 	if !s.allow("c:"+ip, challengesPerIP, time.Hour) {
 		refuse(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, challengeBytes))
 	if err != nil {
-		refuse(w, http.StatusRequestEntityTooLarge, "too large")
+		s.fail(w, http.StatusRequestEntityTooLarge, "too large", ip, "")
 		return
 	}
 	var keyB64 string
 	if r.URL.RawQuery != "" || len(r.TransferEncoding) > 0 || parseStrict(body, map[string]any{"key": &keyB64}) != nil ||
 		!reB64Key.MatchString(keyB64) || string(body) != `{"key":"`+keyB64+`"}` {
-		refuse(w, http.StatusBadRequest, "bad request")
+		s.fail(w, http.StatusBadRequest, "bad request", ip, "")
 		return
 	}
 	_, raw, err := parseKey(keyB64)
 	if err != nil {
-		refuse(w, http.StatusBadRequest, "bad key")
+		s.fail(w, http.StatusBadRequest, "bad key", ip, "")
 		return
 	}
+	// The key isn't proven here (no signature yet), so it's never struck, but a banned or blocked one gets
+	// no challenge: only its own holder could have got it blocked.
 	id := keyID(raw)
 	if s.store.banned(id) {
-		refuse(w, http.StatusForbidden, "not accepted")
+		s.fail(w, http.StatusForbidden, "not accepted", ip, "")
+		return
+	}
+	if s.blockedNow("key:" + id) {
+		turnAway(w)
 		return
 	}
 	n := make([]byte, 32)
@@ -152,57 +171,67 @@ func (s *server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	s.challenges[nonce] = challenge{key: id, expires: expires}
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"nonce": nonce, "expires": expires.Unix()})
+	json.NewEncoder(w).Encode(map[string]any{"nonce": nonce, "now": s.now().Unix(), "expires": expires.Unix()})
 }
 
 // POST /v1/submit/{kind}, the package as the body and its signature in X-NM-Signature.
 func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := s.ipTag(s.clientIP(r))
+	if s.blockedNow("ip:" + ip) {
+		turnAway(w)
+		return
+	}
 	k, ok := kinds[r.PathValue("kind")]
 	if !ok {
-		refuse(w, http.StatusNotFound, "unknown kind")
+		s.fail(w, http.StatusNotFound, "unknown kind", ip, "")
+		return
+	}
+	// The request itself: no query, a declared length within the kind's limits, no chunked body, the one
+	// content type. Checked before the daily allowance, so junk is struck instead of using it up.
+	if r.ContentLength > k.maxBytes {
+		s.fail(w, http.StatusRequestEntityTooLarge, "too large", ip, "")
+		return
+	}
+	if r.URL.RawQuery != "" || r.ContentLength < k.minBytes || len(r.TransferEncoding) > 0 {
+		s.fail(w, http.StatusBadRequest, "bad request", ip, "")
+		return
+	}
+	if r.Header.Get("Content-Type") != "application/vnd.nativemons.package+json" {
+		s.fail(w, http.StatusUnsupportedMediaType, "wrong type", ip, "")
 		return
 	}
 	if !s.allow("u:"+ip, uploadsPerIP, 24*time.Hour) {
 		refuse(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
-	// The request itself: no query, a declared length within the kind's limits, no chunked body.
-	if r.ContentLength > k.maxBytes {
-		refuse(w, http.StatusRequestEntityTooLarge, "too large")
-		return
-	}
-	if r.URL.RawQuery != "" || r.ContentLength < k.minBytes || len(r.TransferEncoding) > 0 {
-		refuse(w, http.StatusBadRequest, "bad request")
-		return
-	}
-	if r.Header.Get("Content-Type") != "application/vnd.nativemons.package+json" {
-		refuse(w, http.StatusUnsupportedMediaType, "wrong type")
-		return
-	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, k.maxBytes))
 	if err != nil {
-		refuse(w, http.StatusRequestEntityTooLarge, "too large")
+		s.fail(w, http.StatusRequestEntityTooLarge, "too large", ip, "")
 		return
 	}
 	// The signature first: nothing else in the package is believed before it holds.
 	e, err := readEnvelope(body)
 	if err != nil {
-		refuse(w, http.StatusBadRequest, "bad package")
+		s.fail(w, http.StatusBadRequest, "bad package", ip, "")
 		return
 	}
 	if e.Kind != r.PathValue("kind") {
-		refuse(w, http.StatusBadRequest, "bad package")
+		s.fail(w, http.StatusBadRequest, "bad package", ip, "")
 		return
 	}
 	key, raw, err := parseKey(e.Key)
 	if err != nil || !verify(key, body, r.Header.Get("X-NM-Signature")) {
-		refuse(w, http.StatusUnauthorized, "bad signature")
+		s.fail(w, http.StatusUnauthorized, "bad signature", ip, "")
 		return
 	}
+	// From here the install is proven, so its refusals count against it too.
 	id := keyID(raw)
 	if s.store.banned(id) {
-		refuse(w, http.StatusForbidden, "not accepted")
+		s.fail(w, http.StatusForbidden, "not accepted", ip, id)
+		return
+	}
+	if s.blockedNow("key:" + id) {
+		turnAway(w)
 		return
 	}
 	// The challenge: given to this key, not expired, and used only once.
@@ -213,12 +242,15 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if !found || c.key != id || s.now().After(c.expires) {
-		refuse(w, http.StatusUnauthorized, "bad or used challenge")
+		s.fail(w, http.StatusUnauthorized, "bad or used challenge", ip, id)
 		return
 	}
 	created, _ := strconv.ParseInt(e.Created.String(), 10, 64)
+	// Not a strike: a launcher that took "created" from its own wrong clock is honest, and the challenge
+	// (this key's, minutes old, once) already keeps a package fresh.
 	if d := s.now().Sub(time.Unix(created, 0)); d > clockSlack || d < -clockSlack {
 		refuse(w, http.StatusBadRequest, "clock")
+		s.record(http.StatusBadRequest, "clock", ip, id)
 		return
 	}
 	if !s.allow("k:"+e.Kind+":"+id, k.perDay, 24*time.Hour) {
@@ -227,12 +259,12 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, canonical, err := k.check(e.Body)
 	if err != nil {
-		refuse(w, http.StatusBadRequest, "bad package")
+		s.fail(w, http.StatusBadRequest, "bad package", ip, id)
 		return
 	}
 	// The layout: only the bytes the launcher writes, nothing reordered, spaced, escaped or added.
 	if !bytes.Equal(body, e.canonical(canonical)) || int64(len(body)) != r.ContentLength {
-		refuse(w, http.StatusBadRequest, "bad layout")
+		s.fail(w, http.StatusBadRequest, "bad layout", ip, id)
 		return
 	}
 	receipt, err := s.store.quarantine(e.Kind, id, ip, summary, body, r.Header.Get("X-NM-Signature"))

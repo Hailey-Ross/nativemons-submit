@@ -16,7 +16,9 @@ import (
 
 // The data folder: queue/<receipt>.package (the exact bytes), .sig (its signature, checked, kept so a merge can
 // check it again) and .json (what the server noted), then
-// approved/ or rejected/ after review, and banned.txt (one key id a line). Names are always the server's.
+// approved/ or rejected/ after review, banned.txt (one key id a line), blocks.json (blocks
+// in force), ipsalt (the address salt), and refusals.log (one JSON line per
+// refusal, rolled over to refusals.log.1 at 5 MB). Names are always the server's.
 type store struct {
 	dir string
 	mu  sync.Mutex
