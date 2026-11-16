@@ -1,0 +1,4 @@
+.env
+data/
+deploy/nativemons-submit
+*.exe

@@ -1,0 +1,19 @@
+# submit.hails.app: nativemons-submit. Add this block to the server's Caddyfile.
+submit.hails.app {
+    # Only the service's own paths; anything else never reaches it.
+    @api path /v1/challenge /v1/submit/* /v1/health
+    handle @api {
+        request_body {
+            max_size 1MB
+        }
+        reverse_proxy 127.0.0.1:8087
+    }
+    handle {
+        respond "Not found" 404
+    }
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        Strict-Transport-Security "max-age=31536000"
+    }
+}

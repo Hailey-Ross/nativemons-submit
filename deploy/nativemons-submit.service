@@ -1,0 +1,46 @@
+[Unit]
+Description=nativemons-submit, the nativeMons submission service (submit.hails.app)
+After=network.target
+
+[Service]
+Type=simple
+User=nmsubmit
+Group=nmsubmit
+WorkingDirectory=/opt/nativemons-submit
+ExecStart=/opt/nativemons-submit/nativemons-submit serve
+Restart=always
+RestartSec=5
+Environment=NMSUBMIT_LISTEN=127.0.0.1:8087
+Environment=NMSUBMIT_DATA=/opt/nativemons-submit/data
+Environment=NMSUBMIT_TRUST_PROXY=1
+
+# It only needs to listen on localhost and write its data folder: everything else is closed.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/opt/nativemons-submit/data
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

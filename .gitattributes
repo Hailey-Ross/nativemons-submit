@@ -1,0 +1,2 @@
+# Unix line endings everywhere: the service file and Caddy block go to a Linux server as they are.
+* text=auto eol=lf
